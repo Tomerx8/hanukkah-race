@@ -1,0 +1,376 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>מרוץ חנוכה – ניהול</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Rubik:wght@400;500;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+<style>
+  body { font-size: 15px; }
+  .wrap { max-width: 1200px; }
+  .tabs { margin: 10px 0 4px; flex-wrap: wrap; }
+  .tabs button { flex: 1 1 auto; }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  th, td { padding: 8px 6px; border-bottom: 1px solid var(--line); text-align: right; vertical-align: middle; }
+  th { color: var(--muted); font-weight: 500; font-size: 13px; }
+  .scroll { overflow-x: auto; }
+  td input, td select { padding: 6px 8px; border-radius: 8px; font-size: 14px; }
+  .pill { display: inline-block; padding: 2px 9px; border-radius: 99px; font-size: 13px; background: var(--bg2); border: 1px solid var(--line); white-space: nowrap; }
+  .pill.good { border-color: var(--good); color: var(--good); }
+  .pill.bad { border-color: var(--bad); color: var(--bad); }
+  .pill.gold { border-color: var(--gold); color: var(--gold); }
+  .modes button { flex: 1 1 120px; }
+  .modes button.on { outline: 3px solid #fff; }
+  .station textarea { min-height: 70px; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  @media (max-width: 760px) { .grid2 { grid-template-columns: 1fr; } }
+  .photos { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 12px; }
+  .photo { background: var(--card); border: 1px solid var(--line); border-radius: 14px; overflow: hidden; }
+  .photo.ok { border-color: var(--good); }
+  .photo.penalty { border-color: var(--bad); }
+  .photo img { width: 100%; aspect-ratio: 4/3; object-fit: cover; display: block; background: #000; cursor: zoom-in; }
+  .photo .noimg { aspect-ratio: 4/3; display: flex; align-items: center; justify-content: center; color: var(--muted); }
+  .photo .meta { padding: 10px; }
+  .lightbox { position: fixed; inset: 0; background: rgba(0,0,0,.9); display: flex; align-items: center; justify-content: center; z-index: 10; cursor: zoom-out; }
+  .lightbox img { max-width: 96vw; max-height: 96vh; }
+  .qrs { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 14px; }
+  .qrcard { background: #fff; color: #111; border-radius: 14px; padding: 18px; text-align: center; }
+  .qrcard h3 { font-size: 22px; margin: 0 0 8px; color: #0a1633; }
+  .qrcard .q svg { width: 100%; height: auto; display: block; }
+  .qrcard .tag { font-size: 12px; color: #666; margin-top: 8px; direction: rtl; }
+  .qrcard .sub { font-size: 15px; color: #333; margin-top: 4px; }
+  .qrcard a { color: #1a4fb0; font-size: 11px; word-break: break-all; }
+  @media print {
+    body { background: #fff !important; }
+    .noprint, .tabs, header { display: none !important; }
+    .wrap { max-width: none; padding: 0; }
+    .card { border: 0; box-shadow: none; background: none; padding: 0; margin: 0; }
+    .qrs { display: block; }
+    .qrcard { page-break-after: always; break-after: page; padding: 40px 30px; }
+    .qrcard h3 { font-size: 40px; }
+    .qrcard .sub { font-size: 22px; }
+    .qrcard .q svg { width: 80%; margin: 20px auto; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="row noprint"><h1 class="grow" style="color:var(--gold)">🕎 ניהול מרוץ חנוכה</h1>
+    <a class="btn ghost sm" href="tv.html" target="_blank" style="border:1px solid var(--line);color:var(--text);background:transparent">פתיחת מסך הטלוויזיה ↗</a></header>
+  <div id="root"></div>
+</div>
+<div id="lightbox" class="lightbox hidden"><img alt=""></div>
+
+<script src="config.js"></script>
+<script src="common.js"></script>
+<script src="vendor/qrcode.js"></script>
+<script>
+const { rpc, esc, fmtDuration, photoUrl } = Game;
+const root = document.getElementById('root');
+let pw = sessionStorage.getItem('race_admin_pw');
+let tab = sessionStorage.getItem('race_admin_tab') || 'game';
+let ov = null, offset = 0, timer = null;
+const siteBase = new URL('./', location.href).href;
+const stationUrl = (tok) => `${siteBase}?s=${tok}`;
+
+// ---------------- login ----------------
+function renderLogin(err = '') {
+  root.innerHTML = `<div class="card" style="max-width:420px;margin:40px auto">
+    <h2>כניסת מנהל</h2>
+    <p class="muted small">בכניסה הראשונה, הסיסמה שתקלידו תהפוך לסיסמת המנהל.</p>
+    <form id="lf"><div class="field"><input type="password" id="pw" placeholder="סיסמה" autocomplete="current-password"></div>
+    <button class="full">כניסה</button></form>
+    <div class="msg bad ${err ? '' : 'hidden'}">${esc(err)}</div></div>`;
+  document.getElementById('lf').onsubmit = async (e) => {
+    e.preventDefault();
+    const p = document.getElementById('pw').value;
+    try {
+      await rpc('admin_login', { p_pw: p });
+      pw = p; sessionStorage.setItem('race_admin_pw', p);
+      load(true);
+    } catch (er) { renderLogin(er.message); }
+  };
+}
+
+async function call(fn, args = {}) {
+  try { return await rpc(fn, { p_pw: pw, ...args }); }
+  catch (e) {
+    if (e.code === 'BAD_PASSWORD') { sessionStorage.removeItem('race_admin_pw'); pw = null; renderLogin(e.message); }
+    else toast(e.message, 'bad');
+    throw e;
+  }
+}
+
+function toast(text, kind = 'good') {
+  const t = document.createElement('div');
+  t.className = `msg ${kind}`;
+  t.style.cssText = 'position:fixed;bottom:16px;left:16px;right:16px;max-width:520px;margin:auto;z-index:20';
+  t.textContent = text;
+  document.body.appendChild(t);
+  setTimeout(() => t.remove(), 3000);
+}
+
+async function load(full) {
+  if (!pw) return renderLogin();
+  try { ov = await call('admin_overview'); } catch (e) { return; }
+  offset = new Date(ov.now).getTime() - Date.now();
+  if (full) renderShell();
+  renderTab(full);
+  clearTimeout(timer);
+  timer = setTimeout(() => load(false), 4000);
+}
+
+function renderShell() {
+  const tabs = [['game', 'ניהול המשחק'], ['stations', 'תחנות וחידות'], ['photos', 'שיפוט תמונות'], ['qr', 'קודי QR להדפסה']];
+  root.innerHTML = `<div class="tabs noprint">${tabs.map(([k, l]) => `<button data-t="${k}" class="${tab === k ? 'on' : ''}">${l}</button>`).join('')}</div><div id="tab"></div>`;
+  root.querySelectorAll('.tabs button').forEach((b) => b.onclick = () => {
+    tab = b.dataset.t; sessionStorage.setItem('race_admin_tab', tab); renderShell(); renderTab(true);
+  });
+}
+
+// Auto-refresh redraws only tabs that hold no half-typed input.
+function renderTab(full) {
+  const el = document.getElementById('tab');
+  if (!el) return;
+  const a = document.activeElement;
+  const typing = a && el.contains(a) && /^(INPUT|SELECT|TEXTAREA)$/.test(a.tagName);
+  if (tab === 'game') { if (full || !typing) renderGame(el); }
+  else if (tab === 'stations') { if (full) renderStations(el); }
+  else if (tab === 'photos') { if (full || !typing) renderPhotos(el); }
+  else if (tab === 'qr') { if (full) renderQr(el); }
+}
+
+const stationName = (id) => (ov.stations.find((s) => s.id === id) || {}).name || '—';
+
+// ---------------- game tab ----------------
+function renderGame(el) {
+  const s = ov.settings;
+  const active = ov.stations.filter((x) => x.active).sort((a, b) => a.position - b.position || a.id - b.id);
+  const stateLabel = { waiting: 'ממתין לזינוק', running: 'רץ', ended: 'הסתיים' }[s.game_state];
+  const since = s.started_at ? fmtDuration(((s.ended_at ? new Date(s.ended_at).getTime() : Date.now() + offset) - new Date(s.started_at).getTime()) / 1000) : '';
+  const modes = [['lobby', '🟡 לובי (כולם 0%)', 'gold'], ['live', '🟢 חי (אחוזים)', 'green'], ['blackout', '⚫ האפלה', 'ghost'], ['results', '🏆 תוצאות', 'blue']];
+  const teams = ov.teams;
+  const ranking = [...teams].filter((t) => t.finished_at)
+    .sort((a, b) => (a.elapsed_sec + a.penalty_total) - (b.elapsed_sec + b.penalty_total));
+
+  el.innerHTML = `
+  <div class="card">
+    <div class="row"><div class="grow"><div class="label">מצב המשחק</div>
+      <div class="big">${stateLabel} ${since ? `· <span class="timer">${since}</span>` : ''}</div>
+      <div class="muted small">${teams.length} צוותים · ${active.length} תחנות פעילות</div></div>
+      ${s.game_state === 'waiting' ? `<button class="green" id="start" style="font-size:20px;padding:16px 28px">🚀 זינוק!</button>` : ''}
+      ${s.game_state === 'running' ? `<button class="red" id="end">סיום המשחק</button>` : ''}
+      <button class="ghost" id="reset">איפוס…</button>
+    </div>
+  </div>
+  <div class="card">
+    <div class="label">מסך הטלוויזיה</div>
+    <div class="row modes">${modes.map(([m, l, c]) => `<button class="${c} ${s.board_mode === m ? 'on' : ''}" data-m="${m}">${l}</button>`).join('')}</div>
+    <p class="muted small">לחיצה על "זינוק" מעבירה את הלוח למצב חי. כשהצוותים מתחילים לחזור, לחצו "האפלה".</p>
+  </div>
+  <div class="card"><div class="label">צוותים</div><div class="scroll"><table>
+    <thead><tr><th>צוות</th><th>קוד</th><th>תחנת פתיחה</th><th>התקדמות</th><th>עכשיו מחפשים</th><th>טעויות</th><th>זמן</th><th>עונש (דק׳)</th><th></th></tr></thead>
+    <tbody>${teams.map((t) => {
+      const autoOff = (teams.indexOf(t) % Math.max(1, active.length)) + 1;
+      const startSel = s.game_state === 'waiting'
+        ? `<select data-off="${t.id}"><option value="">אוטומטי (${autoOff})</option>${active.map((st, i) => `<option value="${i + 1}" ${t.start_offset === i + 1 ? 'selected' : ''}>${i + 1}. ${esc(st.name)}</option>`).join('')}</select>`
+        : (t.route ? esc(stationName(t.route[0])) : '—');
+      const now = { waiting: '—', riddle: esc(stationName(t.current_station)), final: '<span class="pill gold">בדרך חזרה</span>', finished: '<span class="pill good">סיימו 🏁</span>', ended: 'לא סיימו' }[t.stage];
+      const locked = t.locked_until ? `<span class="pill bad">נעול</span>` : '';
+      return `<tr>
+        <td><b>${esc(t.name)}</b></td><td>${esc(t.pin)}</td><td>${startSel}</td>
+        <td>${t.total ? `${Math.min(t.step, t.total)}/${t.total}` : '—'}</td>
+        <td>${now} ${locked}</td><td>${t.wrong_total}</td>
+        <td class="timer">${t.elapsed_sec != null ? fmtDuration(t.elapsed_sec) : ''}</td>
+        <td><input type="number" min="0" step="1" style="width:70px" data-pen="${t.id}" value="${Math.round(t.penalty_sec / 60)}"></td>
+        <td style="white-space:nowrap">
+          ${t.stage === 'riddle' ? `<button class="sm ghost" data-act="skip" data-id="${t.id}" title="דילוג על התחנה הנוכחית">דילוג</button>` : ''}
+          ${t.step > 0 ? `<button class="sm ghost" data-act="back" data-id="${t.id}" title="חזרה תחנה אחת">חזרה</button>` : ''}
+          ${t.locked_until ? `<button class="sm ghost" data-act="unlock" data-id="${t.id}">שחרור נעילה</button>` : ''}
+          ${t.stage === 'final' ? `<button class="sm ghost" data-act="finish" data-id="${t.id}">סימון סיום</button>` : ''}
+          <button class="sm ghost" data-act="delete" data-id="${t.id}" title="מחיקת צוות">🗑</button>
+        </td></tr>`;
+    }).join('') || '<tr><td colspan="9" class="muted">עוד לא נרשמו צוותים. השחקנים פותחים צוות מהקישור הראשי או מקוד ה-QR שעל הטלוויזיה.</td></tr>'}</tbody>
+  </table></div>
+  <p class="muted small">"תחנת פתיחה" אוטומטית מסובבת את הצוותים בין התחנות לפי סדר ההרשמה, כך שכל תחנה מקבלת צוות אחד או שניים בהתחלה. לכל צוות אותו סדר תחנות במעגל, מנקודת פתיחה אחרת.</p></div>
+
+  ${ranking.length ? `<div class="card"><div class="label">דירוג (כולל עונשים)</div><table><tbody>${ranking.map((t, i) => `
+    <tr><td>${i + 1}</td><td><b>${esc(t.name)}</b></td><td class="timer">${fmtDuration(t.elapsed_sec + t.penalty_total)}</td>
+    <td class="muted small">${t.penalty_total ? `זמן ריצה ${fmtDuration(t.elapsed_sec)} + עונש ${fmtDuration(t.penalty_total)}` : ''}</td></tr>`).join('')}</tbody></table></div>` : ''}
+
+  <div class="card"><div class="label">תשובות אחרונות</div><div class="scroll"><table><tbody>${ov.attempts.map((a) => `
+    <tr><td class="muted small">${new Date(a.at).toLocaleTimeString('he-IL')}</td><td>${esc(a.team)}</td><td>${esc(a.station)}</td>
+    <td>${esc(a.answer)}</td><td>${a.correct ? '<span class="pill good">נכון</span>' : '<span class="pill bad">שגוי</span>'}</td></tr>`).join('') || '<tr><td class="muted">אין עדיין</td></tr>'}</tbody></table></div></div>`;
+
+  const b = (id, fn) => { const x = document.getElementById(id); if (x) x.onclick = fn; };
+  b('start', async () => {
+    if (!confirm(`לזנק עכשיו? ${teams.length} צוותים יקבלו את החידה הראשונה.`)) return;
+    await call('admin_start'); toast('🚀 יצאו לדרך!'); load(false);
+  });
+  b('end', async () => { if (confirm('לסיים את המשחק לכולם?')) { await call('admin_end'); load(false); } });
+  b('reset', async () => {
+    if (!confirm('לאפס את המשחק? כל ההתקדמות, התשובות והתמונות יימחקו.')) return;
+    const del = confirm('למחוק גם את הצוותים? (אישור = למחוק, ביטול = להשאיר את הצוותים רשומים)');
+    await call('admin_reset', { p_delete_teams: del }); toast('המשחק אופס'); load(false);
+  });
+  el.querySelectorAll('[data-m]').forEach((x) => x.onclick = async () => { await call('admin_set_mode', { p_mode: x.dataset.m }); load(false); });
+  el.querySelectorAll('[data-off]').forEach((x) => x.onchange = async () => {
+    await call('admin_team', { p_team_id: +x.dataset.off, p_action: 'offset', p_value: x.value ? +x.value : null }); load(false);
+  });
+  el.querySelectorAll('[data-pen]').forEach((x) => x.onchange = async () => {
+    await call('admin_team', { p_team_id: +x.dataset.pen, p_action: 'penalty', p_value: Math.max(0, +x.value || 0) * 60 }); toast('העונש נשמר'); x.blur(); load(false);
+  });
+  el.querySelectorAll('[data-act]').forEach((x) => x.onclick = async () => {
+    const act = x.dataset.act, t = teams.find((y) => y.id === +x.dataset.id);
+    const ask = { skip: `לדלג לצוות "${t.name}" על התחנה הנוכחית?`, back: `להחזיר את "${t.name}" תחנה אחת אחורה?`, delete: `למחוק את הצוות "${t.name}"?`, finish: `לסמן ש"${t.name}" הגיעו עכשיו?` }[act];
+    if (ask && !confirm(ask)) return;
+    await call('admin_team', { p_team_id: t.id, p_action: act }); load(false);
+  });
+}
+
+// ---------------- stations tab ----------------
+function renderStations(el) {
+  const s = ov.settings;
+  const sts = [...ov.stations].sort((a, b) => a.position - b.position || a.id - b.id);
+  el.innerHTML = `
+  <div class="card"><div class="label">איך זה עובד</div>
+    <p class="small" style="margin:0">לכל תחנה יש <b>חידת מיקום</b> (מה הצוות רואה כדי למצוא את התחנה) ו<b>משימה</b> (מה מופיע כשסורקים את הקוד בתחנה). אחרי שהמשימה נפתרה, הצוות מקבל את חידת המיקום של התחנה הבאה במסלול שלו. אחרי כל התחנות מגיעה החידה האחרונה, שמובילה לחדר הישיבות ולקוד הסיום.
+    הסדר כאן הוא סדר המעגל: כל צוות עובר את כל התחנות לפי הסדר הזה, ומתחיל מנקודה אחרת.</p></div>
+  ${sts.map((st, i) => stationForm(st, i)).join('')}
+  <div class="row noprint"><button class="blue" id="addSt">+ הוספת תחנה</button></div>
+  <div class="card gold"><div class="label">החידה האחרונה (מובילה חזרה לחדר הישיבות)</div>
+    <textarea id="finalR" rows="3">${esc(s.final_riddle)}</textarea>
+    <div class="grid2" style="margin-top:10px">
+      <div class="field"><label>נעילה אחרי טעות שנייה (שניות). כל טעות נוספת מכפילה אותה.</label><input type="number" id="lb" value="${s.lockout_base_sec}"></div>
+      <div class="field"><label>נעילה מקסימלית (שניות)</label><input type="number" id="lm" value="${s.lockout_max_sec}"></div>
+    </div>
+    <button id="saveFinal">שמירה</button></div>`;
+
+  el.querySelectorAll('form.station').forEach((f) => {
+    f.onsubmit = async (e) => {
+      e.preventDefault();
+      const g = (n) => f.elements[n].value;
+      const answers = g('answers').split('\n').map((x) => x.trim()).filter(Boolean);
+      if (g('kind') === 'text' && !answers.length) { toast('הוסיפו לפחות תשובה נכונה אחת', 'bad'); return; }
+      const r = await call('admin_save_station', {
+        p_id: f.dataset.id ? +f.dataset.id : null, p_position: +g('position') || 0, p_name: g('name'),
+        p_kind: g('kind'), p_question: g('question'), p_answers: answers,
+        p_location_riddle: g('riddle'), p_active: f.elements.active.checked
+      });
+      toast('התחנה נשמרה');
+      await load(false); renderStations(el);
+    };
+    const del = f.querySelector('[data-del]');
+    if (del) del.onclick = async () => {
+      if (!confirm('למחוק את התחנה? הקוד המודפס שלה יפסיק לעבוד.')) return;
+      await call('admin_delete_station', { p_id: +f.dataset.id }); await load(false); renderStations(el);
+    };
+    f.elements.kind.onchange = () => f.querySelector('.ans').classList.toggle('hidden', f.elements.kind.value === 'photo');
+  });
+  document.getElementById('addSt').onclick = () => {
+    const next = (sts.length ? Math.max(...sts.map((x) => x.position)) : 0) + 1;
+    const div = document.createElement('div');
+    div.innerHTML = stationForm({ position: next, name: '', kind: 'text', question: '', answers: [], location_riddle: '', active: true }, sts.length);
+    document.getElementById('addSt').parentElement.before(div.firstElementChild);
+    renderStationsWire(el);
+  };
+  document.getElementById('saveFinal').onclick = async () => {
+    await call('admin_save_settings', { p_final_riddle: document.getElementById('finalR').value, p_lockout_base: +document.getElementById('lb').value, p_lockout_max: +document.getElementById('lm').value });
+    toast('נשמר');
+  };
+}
+// Re-wire after adding a blank form (keeps the user's typing in other forms).
+function renderStationsWire(el) {
+  const f = el.querySelector('form.station:not([data-id])');
+  f.onsubmit = async (e) => {
+    e.preventDefault();
+    const g = (n) => f.elements[n].value;
+    const answers = g('answers').split('\n').map((x) => x.trim()).filter(Boolean);
+    if (!g('name').trim()) { toast('תנו לתחנה שם', 'bad'); return; }
+    await call('admin_save_station', { p_id: null, p_position: +g('position') || 0, p_name: g('name'), p_kind: g('kind'),
+      p_question: g('question'), p_answers: answers, p_location_riddle: g('riddle'), p_active: f.elements.active.checked });
+    toast('התחנה נוספה'); await load(false); renderStations(el);
+  };
+  f.elements.kind.onchange = () => f.querySelector('.ans').classList.toggle('hidden', f.elements.kind.value === 'photo');
+}
+
+function stationForm(st, i) {
+  return `<form class="card station" ${st.id ? `data-id="${st.id}"` : ''}>
+    <div class="row"><div class="label grow">${st.id ? `תחנה ${i + 1}` : 'תחנה חדשה'} ${st.active ? '' : '<span class="pill bad">כבויה</span>'}</div>
+      <label class="small"><input type="checkbox" name="active" ${st.active ? 'checked' : ''} style="width:auto"> פעילה</label></div>
+    <div class="grid2">
+      <div class="field"><label>מיקום פיזי (רק לך, השחקנים לא רואים)</label><input name="name" value="${esc(st.name)}" required></div>
+      <div class="row">
+        <div class="field grow"><label>סדר במעגל</label><input name="position" type="number" value="${st.position}"></div>
+        <div class="field grow"><label>סוג משימה</label><select name="kind">
+          <option value="text" ${st.kind === 'text' ? 'selected' : ''}>שאלה עם תשובה</option>
+          <option value="photo" ${st.kind === 'photo' ? 'selected' : ''}>משימת צילום</option></select></div>
+      </div>
+    </div>
+    <div class="field"><label>🧭 חידת המיקום: מה הצוות קורא כדי למצוא את התחנה הזאת</label><textarea name="riddle" rows="2">${esc(st.location_riddle)}</textarea></div>
+    <div class="field"><label>❓ המשימה שמופיעה כשסורקים את הקוד בתחנה</label><textarea name="question" rows="3">${esc(st.question)}</textarea></div>
+    <div class="field ans ${st.kind === 'photo' ? 'hidden' : ''}"><label>✅ תשובות נכונות, אחת בכל שורה. רווחים, ניקוד, פיסוק ואותיות סופיות לא משנים. תשובה שהיא רק מספר מתקבלת גם בתוך משפט ("בשנת 63").</label>
+      <textarea name="answers" rows="3" dir="auto">${esc((st.answers || []).join('\n'))}</textarea></div>
+    <div class="row"><button type="submit">שמירה</button>${st.id ? '<button type="button" class="ghost" data-del>מחיקה</button>' : ''}</div>
+  </form>`;
+}
+
+// ---------------- photos tab ----------------
+function renderPhotos(el) {
+  const ph = ov.photos;
+  const pending = ph.filter((p) => p.verdict === 'pending').length;
+  el.innerHTML = `<div class="card"><div class="label">שיפוט תמונות</div>
+    <p class="small" style="margin:0">כל תמונה פתחה לצוות את החידה הבאה מיד. כאן מאשרים, או נותנים עונש בדקות שמתווסף לזמן הסיום. ${pending} ממתינות לשיפוט.</p></div>
+    <div class="photos">${ph.map((p) => `
+      <div class="photo ${p.verdict}">
+        ${p.uploaded ? `<img src="${photoUrl(p.path)}" data-full="${photoUrl(p.path)}" loading="lazy" alt="">` : '<div class="noimg">⏳ התמונה עוד עולה…</div>'}
+        <div class="meta"><b>${esc(p.team)}</b> · <span class="muted small">${esc(p.station)} · ${new Date(p.created_at).toLocaleTimeString('he-IL')}</span>
+          <div class="row" style="margin-top:8px">
+            <button class="sm green" data-ok="${p.id}">✓ אישור</button>
+            <input type="number" min="1" value="${p.penalty_sec ? Math.round(p.penalty_sec / 60) : 2}" style="width:60px" id="pen-${p.id}">
+            <button class="sm red" data-pen="${p.id}">עונש (דק׳)</button>
+          </div>
+          <div class="small" style="margin-top:6px">${p.verdict === 'ok' ? '<span class="pill good">אושרה</span>' : p.verdict === 'penalty' ? `<span class="pill bad">עונש ${Math.round(p.penalty_sec / 60)} דק׳</span>` : '<span class="pill">ממתינה</span>'}</div>
+        </div></div>`).join('') || '<p class="muted">עוד אין תמונות.</p>'}</div>`;
+  el.querySelectorAll('[data-ok]').forEach((b) => b.onclick = async () => { await call('admin_judge', { p_photo_id: b.dataset.ok, p_verdict: 'ok', p_penalty_sec: 0 }); load(true); });
+  el.querySelectorAll('[data-pen]').forEach((b) => b.onclick = async () => {
+    const m = +document.getElementById('pen-' + b.dataset.pen).value || 0;
+    await call('admin_judge', { p_photo_id: b.dataset.pen, p_verdict: 'penalty', p_penalty_sec: m * 60 }); load(true);
+  });
+  el.querySelectorAll('img[data-full]').forEach((im) => im.onclick = () => {
+    const lb = document.getElementById('lightbox'); lb.querySelector('img').src = im.dataset.full; lb.classList.remove('hidden');
+  });
+}
+document.getElementById('lightbox').onclick = (e) => e.currentTarget.classList.add('hidden');
+
+// ---------------- QR tab ----------------
+function qrSvg(text) { const q = qrcode(0, 'M'); q.addData(text); q.make(); return q.createSvgTag({ cellSize: 6, margin: 2, scalable: true }); }
+
+function renderQr(el) {
+  const sts = ov.stations.filter((x) => x.active).sort((a, b) => a.position - b.position || a.id - b.id);
+  el.innerHTML = `
+    <div class="card noprint"><div class="row"><div class="grow small">
+      כל קוד מוביל לכתובת סודית משלו, כך שאי אפשר לנחש את הקוד הבא. קודים של תחנות שכבו לא מודפסים.
+      בהדפסה כל קוד יוצא בדף נפרד. <b>בדקו כל קוד עם הטלפון לפני שתולים אותו.</b><br>
+      את <b>קוד הסיום</b> שימו בחדר הישיבות במקום נפרד מקוד התחנה שבחדר (למשל אצלך על השולחן).</div>
+      <button onclick="window.print()">🖨 הדפסה</button></div></div>
+    <div class="qrs">
+      ${sts.map((st, i) => `<div class="qrcard"><h3>🕎 מרוץ חנוכה</h3><div class="sub">מצאתם תחנה! סרקו את הקוד</div>
+        <div class="q">${qrSvg(stationUrl(st.token))}</div>
+        <div class="tag">${i + 1} · ${esc(st.name)}</div><a href="${stationUrl(st.token)}" target="_blank">${stationUrl(st.token)}</a></div>`).join('')}
+      <div class="qrcard"><h3>🏁 קו הסיום</h3><div class="sub">סרקו כדי לעצור את השעון</div>
+        <div class="q">${qrSvg(stationUrl(ov.settings.finish_token))}</div>
+        <div class="tag">קוד סיום · חדר הישיבות</div><a href="${stationUrl(ov.settings.finish_token)}" target="_blank">${stationUrl(ov.settings.finish_token)}</a></div>
+      <div class="qrcard"><h3>🕎 מרוץ חנוכה</h3><div class="sub">פתיחת צוות והצטרפות</div>
+        <div class="q">${qrSvg(siteBase)}</div>
+        <div class="tag">קוד הרשמה (מופיע גם על הטלוויזיה)</div><a href="${siteBase}" target="_blank">${siteBase}</a></div>
+    </div>`;
+}
+
+load(true);
+</script>
+</body>
+</html>

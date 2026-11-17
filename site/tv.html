@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>מרוץ חנוכה – לוח</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Rubik:wght@400;500;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+<style>
+  body { overflow: hidden; }
+  .tv { height: 100vh; display: flex; flex-direction: column; padding: 2.5vh 4vw; gap: 2vh; }
+  header { display: flex; align-items: center; justify-content: space-between; }
+  header h1 { font-size: 5.2vh; font-weight: 800; color: var(--gold); margin: 0; }
+  .clock { font-size: 6vh; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .content { flex: 1; min-height: 0; display: flex; gap: 4vw; }
+  .rows { flex: 1; display: flex; flex-direction: column; justify-content: center; gap: 1.2vh; min-height: 0; }
+  .trow { display: grid; grid-template-columns: 26vw 1fr 8vw; align-items: center; gap: 2vw; }
+  .trow .n { font-size: clamp(16px, 3.4vh, 44px); font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .trow .p { font-size: clamp(16px, 3.4vh, 44px); font-weight: 700; text-align: left; font-variant-numeric: tabular-nums; color: var(--gold2); }
+  .trow .bar { height: clamp(14px, 3vh, 40px); }
+  .trow.fin .n::after { content: ' 🏁'; }
+  .side { width: 24vw; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; gap: 2vh; }
+  .side .qr { background: #fff; padding: 1.6vh; border-radius: 2vh; width: 100%; aspect-ratio: 1; }
+  .side .qr svg, .side .qr img { width: 100%; height: 100%; display: block; }
+  .side p { font-size: 2.8vh; margin: 0; }
+  .center-stage { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; gap: 3vh; }
+  .center-stage .emoji { font-size: 18vh; line-height: 1; }
+  .center-stage h2 { font-size: 7vh; font-weight: 800; color: var(--gold); }
+  .center-stage p { font-size: 3.6vh; color: var(--muted); margin: 0; }
+  .podium { width: min(1100px, 90vw); display: flex; flex-direction: column; gap: .8vh; }
+  .prow { display: grid; grid-template-columns: 9vh 1fr auto; gap: 2vw; align-items: center; background: var(--card); border: 1px solid var(--line); border-radius: 1.6vh; padding: .6vh 2.5vw; font-size: clamp(14px, 3vh, 40px); font-weight: 700; }
+  .prow.r1 { border-color: var(--gold); background: linear-gradient(90deg, rgba(246,197,68,.25), var(--card)); font-size: clamp(18px, 4vh, 52px); }
+  .prow .t { font-variant-numeric: tabular-nums; color: var(--gold2); }
+  .prow .pen { font-size: .55em; color: var(--muted); font-weight: 400; }
+  .count { font-size: 3vh; color: var(--muted); }
+  .err { position: fixed; bottom: 10px; left: 10px; font-size: 14px; color: var(--bad); }
+</style>
+</head>
+<body>
+<div class="tv">
+  <header><h1>🕎 מרוץ חנוכה</h1><div class="clock" id="clock"></div></header>
+  <div class="content" id="content"></div>
+</div>
+<div class="err" id="err"></div>
+<script src="config.js"></script>
+<script src="common.js"></script>
+<script src="vendor/qrcode.js"></script>
+<script>
+const { rpc, esc, fmtDuration } = Game;
+let data = null, offset = 0, lastMode = '';
+const joinUrl = new URL('./', location.href).href;
+
+function joinQr() {
+  const q = qrcode(0, 'M'); q.addData(joinUrl); q.make();
+  return q.createSvgTag({ cellSize: 8, margin: 0, scalable: true });
+}
+
+function teamRows(teams, showPct) {
+  return teams.map((t) => `
+    <div class="trow ${t.finished ? 'fin' : ''}">
+      <div class="n">${esc(t.name)}</div>
+      <div class="bar"><i style="width:${showPct ? t.pct : 0}%"></i></div>
+      <div class="p">${showPct ? t.pct : 0}%</div>
+    </div>`).join('');
+}
+
+function render() {
+  const c = document.getElementById('content');
+  const d = data;
+  if (d.mode === 'lobby') {
+    c.innerHTML = `
+      <div class="rows">${d.teams.length ? teamRows(d.teams, false) : '<div class="center-stage"><p>עוד לא נרשמו צוותים</p></div>'}</div>
+      <div class="side"><div class="qr">${joinQr()}</div>
+        <p>סרקו כדי לפתוח צוות<br>או להצטרף אליו</p><div class="count">${d.team_count} צוותים רשומים</div></div>`;
+  } else if (d.mode === 'live') {
+    c.innerHTML = `<div class="rows">${teamRows(d.teams, true)}</div>`;
+  } else if (d.mode === 'blackout') {
+    c.innerHTML = `<div class="center-stage"><div class="emoji">🤫</div>
+      <h2>הלוח כבוי!</h2><p>הצוותים בדרך חזרה… מי יגיע ראשון לחדר הישיבות?</p></div>`;
+  } else if (d.mode === 'results') {
+    const medal = ['🥇', '🥈', '🥉'];
+    c.innerHTML = `<div class="center-stage" style="justify-content:flex-start"><div class="podium">${d.teams.map((t, i) => `
+      <div class="prow r${i + 1}"><div>${(t.finished && medal[i]) || (i + 1)}</div><div>${esc(t.name)}</div>
+        <div class="t">${t.finished ? fmtDuration(t.total_sec) : 'בדרך…'}
+          ${t.penalty_sec ? `<span class="pen">(כולל ${Math.round(t.penalty_sec / 60 * 10) / 10} דק׳ עונשין)</span>` : ''}</div></div>`).join('')}</div></div>`;
+  }
+}
+
+function tickClock() {
+  const el = document.getElementById('clock');
+  if (!data || !data.started_at || data.mode === 'lobby') { el.textContent = ''; return; }
+  if (data.mode === 'results') { el.textContent = ''; return; }
+  el.textContent = fmtDuration((Date.now() + offset - new Date(data.started_at).getTime()) / 1000);
+}
+
+async function poll() {
+  try {
+    const d = await rpc('board');
+    offset = new Date(d.now).getTime() - Date.now();
+    const changed = JSON.stringify(d.teams) + d.mode + d.team_count !== (data ? JSON.stringify(data.teams) + data.mode + data.team_count : '');
+    data = d;
+    if (changed) render();
+    document.getElementById('err').textContent = '';
+  } catch (e) { document.getElementById('err').textContent = e.message; }
+  setTimeout(poll, 2000);
+}
+setInterval(tickClock, 500);
+poll();
+</script>
+</body>
+</html>

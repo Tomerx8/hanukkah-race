@@ -1,0 +1,12 @@
+{
+  "name": "hanukkah-race-test",
+  "private": true,
+  "description": "Local mock of Supabase and an end-to-end test of a full game",
+  "scripts": {
+    "mock": "node mock-server.js",
+    "e2e": "node e2e.js"
+  },
+  "dependencies": {
+    "pg": "^8.23.1"
+  }
+}

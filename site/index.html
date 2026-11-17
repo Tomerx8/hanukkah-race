@@ -1,0 +1,381 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0a1633">
+<title>מרוץ חנוכה</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Rubik:wght@400;500;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+<style>
+  .top { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+  .team-name { font-size: 22px; font-weight: 800; }
+  .switch { background: none; border: 0; color: var(--muted); font-weight: 400; font-size: 13px; padding: 4px; text-decoration: underline; }
+  .hero { text-align: center; padding: 26px 8px 8px; }
+  .hero .logo { font-size: 54px; line-height: 1; }
+  .hero h1 { font-size: 30px; font-weight: 800; margin-top: 8px; color: var(--gold); }
+  .riddle { font-size: 21px; font-weight: 500; white-space: normal; }
+  .scanhint { display: flex; gap: 10px; align-items: center; margin-top: 14px; padding-top: 12px; border-top: 1px dashed var(--line); color: var(--muted); font-size: 15px; }
+  .photo-pick { display: block; border: 2px dashed var(--line); border-radius: 14px; padding: 22px; text-align: center; cursor: pointer; color: var(--muted); }
+  .photo-pick img { max-width: 100%; max-height: 300px; border-radius: 10px; display: block; margin: 0 auto; }
+  .photo-pick input { display: none; }
+  .uploads { font-size: 14px; color: var(--muted); text-align: center; margin-top: 8px; }
+  .done-big { font-size: 64px; text-align: center; }
+  .stat { font-size: 15px; color: var(--muted); text-align: center; }
+</style>
+</head>
+<body>
+<div class="wrap" id="app"><div class="hero"><div class="spinner"></div></div></div>
+<div class="wrap" style="padding-top:0"><div id="uploads" class="uploads"></div></div>
+
+<script src="config.js"></script>
+<script src="common.js"></script>
+<script>
+const { rpc, esc, textHtml, store, fmtDuration, compressImage, uploadPhoto } = Game;
+const app = document.getElementById('app');
+const params = new URLSearchParams(location.search);
+let token = params.get('s');
+let auth = store.get('race_team');
+let state = null;          // last server response
+let clockOffset = 0;       // server time - local time (ms)
+let lockUntil = 0;         // local ms timestamp when the answer lock ends
+let flash = null;          // one-off banner {kind, text}
+let lastKey = '';
+let busy = false;
+let pickedPhoto = null;    // File picked for a photo task
+let pollTimer = null;
+
+// ---------------- join ----------------
+function renderJoin(mode = 'create', err = '') {
+  app.innerHTML = `
+    <div class="hero"><div class="logo">🕎</div><h1>מרוץ חנוכה</h1>
+      <div class="muted">${token ? 'מצאתם קוד! קודם תגידו לנו מי אתם.' : 'פתחו צוות או הצטרפו לצוות שלכם'}</div></div>
+    <div class="tabs" role="tablist">
+      <button data-mode="create" class="${mode === 'create' ? 'on' : ''}">פתיחת צוות חדש</button>
+      <button data-mode="join" class="${mode === 'join' ? 'on' : ''}">הצטרפות לצוות</button>
+    </div>
+    <div class="card">
+      <form id="joinForm">
+        ${mode === 'create' ? `
+          <div class="field"><label>שם הצוות</label><input id="name" maxlength="30" autocomplete="off" required placeholder="למשל: המכבים המהירים"></div>
+          <div class="field"><label>בחרו קוד צוות בן 4 ספרות (תנו אותו לחברי הצוות)</label>
+            <input id="pin" inputmode="numeric" pattern="\\d{4}" maxlength="4" required placeholder="1234"></div>
+          <button class="full" type="submit">פתיחת הצוות</button>
+          <p class="muted small">רק אחד מהצוות פותח. כל השאר בוחרים "הצטרפות לצוות" ומקלידים את אותו הקוד.</p>
+        ` : `
+          <div class="field"><label>שם הצוות</label><select id="name" required><option value="">טוען צוותים…</option></select></div>
+          <div class="field"><label>קוד הצוות (4 ספרות)</label><input id="pin" inputmode="numeric" pattern="\\d{4}" maxlength="4" required></div>
+          <button class="full" type="submit">הצטרפות</button>
+        `}
+        <div id="joinErr" class="msg bad ${err ? '' : 'hidden'}">${esc(err)}</div>
+      </form>
+    </div>`;
+  app.querySelectorAll('.tabs button').forEach((b) => b.onclick = () => renderJoin(b.dataset.mode));
+  if (mode === 'join') {
+    rpc('list_teams').then((names) => {
+      const sel = document.getElementById('name');
+      if (!sel) return;
+      sel.innerHTML = names.length
+        ? '<option value="">בחרו צוות</option>' + names.map((n) => `<option>${esc(n)}</option>`).join('')
+        : '<option value="">עוד אין צוותים</option>';
+    }).catch((e) => showJoinErr(e.message));
+  }
+  document.getElementById('joinForm').onsubmit = async (ev) => {
+    ev.preventDefault();
+    const btn = ev.target.querySelector('button[type=submit]');
+    btn.disabled = true;
+    try {
+      const r = await rpc('join_team', {
+        p_name: document.getElementById('name').value,
+        p_pin: document.getElementById('pin').value.trim(),
+        p_create: mode === 'create'
+      });
+      auth = { secret: r.secret, name: r.name };
+      store.set('race_team', auth);
+      app.innerHTML = '<div class="hero"><div class="spinner"></div></div>';
+      refresh();
+    } catch (e) { showJoinErr(e.message); btn.disabled = false; }
+  };
+}
+function showJoinErr(t) { const el = document.getElementById('joinErr'); if (el) { el.textContent = t; el.classList.remove('hidden'); } }
+
+// ---------------- main ----------------
+async function refresh(force) {
+  if (!auth) return renderJoin();
+  try {
+    const r = await rpc('scan', { p_secret: auth.secret, p_token: token });
+    apply(r, force);
+  } catch (e) {
+    if (e.code === 'BAD_TEAM') { store.del('race_team'); auth = null; return renderJoin('join', e.message); }
+    showNetErr(e.message);
+  }
+  schedule();
+}
+
+function schedule() {
+  clearTimeout(pollTimer);
+  const waiting = state && state.stage === 'waiting';
+  pollTimer = setTimeout(refresh, waiting ? 3000 : 8000);
+}
+
+function apply(r, force) {
+  state = r;
+  clockOffset = new Date(r.now).getTime() - Date.now();
+  const sc = r.scan;
+  if (sc && sc.status === 'question') {
+    lockUntil = Date.now() + (sc.lock_left || 0) * 1000;
+  }
+  const key = JSON.stringify([r.stage, r.done, r.total, r.riddle, sc && sc.status, sc && sc.question, sc && sc.wrong_count, sc && sc.lock_left > 0]);
+  if (key !== lastKey || force) { lastKey = key; render(); }
+}
+
+function showNetErr(text) {
+  let el = document.getElementById('netErr');
+  if (!el) { el = document.createElement('div'); el.id = 'netErr'; el.className = 'msg bad'; app.prepend(el); }
+  el.textContent = text;
+}
+
+function candles(done, total) {
+  let h = '';
+  for (let i = 0; i < total; i++) h += `<div class="candle ${i < done ? 'lit' : ''}"></div>`;
+  return `<div class="candles" aria-label="${done} מתוך ${total}">${h}</div>`;
+}
+
+function elapsedSec() {
+  if (!state || !state.started_at) return 0;
+  const end = state.finished_at ? new Date(state.finished_at).getTime() : Date.now() + clockOffset;
+  return (end - new Date(state.started_at).getTime()) / 1000;
+}
+
+function render() {
+  const s = state, sc = s.scan;
+  let h = `
+    <div class="top">
+      <div><div class="team-name">${esc(s.team)}</div><button class="switch" id="switchTeam">החלפת צוות</button></div>
+      <div class="center">${s.started_at ? `<div class="big timer" id="timer">${fmtDuration(elapsedSec())}</div>` : ''}</div>
+    </div>
+    ${s.total ? `<div class="card" style="padding:12px 14px 10px">${candles(s.done, s.total)}
+      <div class="stat">${s.stage === 'final' || s.stage === 'finished' ? 'כל התחנות הושלמו' : `תחנות שהושלמו: ${s.done} מתוך ${s.total}`}</div></div>` : ''}`;
+
+  if (flash) { h += `<div class="msg ${flash.kind} pop">${flash.text}</div>`; flash = null; }
+
+  // What the scanned QR means
+  let showStage = true;
+  if (sc) {
+    const st = sc.status;
+    if (st === 'question') { h += questionCard(sc); showStage = false; }
+    else if (st === 'done') h += `<div class="msg info">את התחנה הזאת כבר פתרתם. המשיכו לחידה הבאה 👇</div>`;
+    else if (st === 'not_yours') h += `<div class="msg bad">זה לא הקוד שאתם מחפשים עכשיו. לכל צוות יש מסלול משלו. חזרו לחידה שלכם 👇</div>`;
+    else if (st === 'unknown') h += `<div class="msg bad">הקוד הזה לא מוכר.</div>`;
+    else if (st === 'finish_early') h += `<div class="msg bad">זה קוד הסיום, אבל עוד לא סיימתם את כל התחנות.</div>`;
+    else if (st === 'not_started' && s.stage === 'waiting') h += `<div class="msg info">עוד רגע מתחילים. חכו לזינוק!</div>`;
+  }
+
+  if (showStage) h += stageCard(s);
+  app.innerHTML = h;
+
+  document.getElementById('switchTeam').onclick = () => {
+    if (confirm('לצאת מהצוות הזה בטלפון הזה?')) { store.del('race_team'); auth = null; state = null; lastKey = ''; renderJoin('join'); }
+  };
+  if (sc && sc.status === 'question') wireQuestion(sc);
+}
+
+function stageCard(s) {
+  switch (s.stage) {
+    case 'waiting':
+      return `<div class="card center"><div class="done-big">🕯️</div><h2>מוכנים?</h2>
+        <p class="muted">המשחק עוד לא התחיל. ברגע הזינוק החידה הראשונה תופיע כאן לבד.</p><div class="spinner"></div></div>`;
+    case 'riddle':
+      return `<div class="card gold pop"><div class="label">החידה שמובילה לתחנה ${s.done + 1}</div>
+        <div class="riddle">${textHtml(s.riddle)}</div>
+        <div class="scanhint">📷 <span>מצאתם את הקוד? סרקו אותו עם המצלמה של הטלפון.</span></div></div>`;
+    case 'final':
+      return `<div class="card gold pop"><div class="label">החידה האחרונה: הדרך הביתה</div>
+        <div class="riddle">${textHtml(s.riddle)}</div>
+        <div class="scanhint">🏁 <span>הגעתם? סרקו את קוד הסיום כדי לעצור את השעון.</span></div></div>`;
+    case 'finished':
+      return `<div class="card gold center pop"><div class="done-big">🎉🕎🎉</div><h2>סיימתם!</h2>
+        <p class="big">הזמן שלכם: <span class="timer">${fmtDuration(elapsedSec())}</span></p>
+        <p class="muted">חג אורים שמח! חכו בחדר הישיבות לשאר הצוותים.</p></div>`;
+    case 'ended':
+      return `<div class="card center"><div class="done-big">⏰</div><h2>המשחק הסתיים</h2>
+        <p class="muted">חזרו לחדר הישיבות.</p></div>`;
+  }
+  return '';
+}
+
+function questionCard(sc) {
+  const locked = lockUntil > Date.now();
+  if (sc.kind === 'photo') {
+    return `<div class="card gold pop"><div class="label">תחנה ${sc.number}: משימת צילום 📸</div>
+      <div class="riddle">${textHtml(sc.question)}</div>
+      <div class="field" style="margin-top:16px">
+        <label class="photo-pick" id="pick"><input type="file" id="photo" accept="image/*" capture="environment">
+          <span id="pickText">📷 הקישו כאן כדי לצלם</span></label></div>
+      <button class="full" id="sendPhoto" disabled>שליחת התמונה</button>
+      <p class="muted small">התמונה נשלחת לשופט, והחידה הבאה נפתחת מיד.</p></div>`;
+  }
+  return `<div class="card gold pop"><div class="label">תחנה ${sc.number}: שאלה</div>
+    <div class="riddle">${textHtml(sc.question)}</div>
+    <form id="answerForm" style="margin-top:16px">
+      <div class="field"><input id="answer" autocomplete="off" placeholder="התשובה שלכם" ${locked ? 'disabled' : ''}></div>
+      <div id="lockBox" class="${locked ? '' : 'hidden'}"><div class="muted center small">תשובה שגויה. אפשר לנסות שוב בעוד</div><div class="lock" id="lockLeft"></div></div>
+      <button class="full" id="sendAnswer" type="submit" ${locked ? 'disabled' : ''}>בדיקה</button>
+    </form>
+    ${sc.wrong_count ? `<p class="muted small center">ניסיונות שגויים בתחנה: ${sc.wrong_count}. כל טעות נוספת מאריכה את ההמתנה.</p>` : '<p class="muted small center">טעות ראשונה עוברת בלי עונש. מהשנייה, כל טעות נועלת אתכם לזמן הולך וגדל.</p>'}
+  </div>`;
+}
+
+function wireQuestion(sc) {
+  if (sc.kind === 'photo') {
+    const inp = document.getElementById('photo'), btn = document.getElementById('sendPhoto');
+    inp.onchange = () => {
+      pickedPhoto = inp.files[0] || null;
+      if (!pickedPhoto) return;
+      const url = URL.createObjectURL(pickedPhoto);
+      document.getElementById('pickText').innerHTML = `<img src="${url}" alt=""><div class="small" style="margin-top:8px">הקישו כדי לצלם שוב</div>`;
+      btn.disabled = false;
+    };
+    btn.onclick = sendPhoto;
+    return;
+  }
+  const form = document.getElementById('answerForm');
+  form.onsubmit = async (ev) => {
+    ev.preventDefault();
+    const val = document.getElementById('answer').value.trim();
+    if (!val || busy) return;
+    busy = true;
+    document.getElementById('sendAnswer').disabled = true;
+    try {
+      const r = await rpc('submit_answer', { p_secret: auth.secret, p_token: token, p_answer: val });
+      if (r.result === 'correct') {
+        flash = { kind: 'good', text: '✅ נכון! כל הכבוד. הנה החידה הבאה:' };
+        dropToken();
+        r.scan = null;
+      } else if (r.result === 'wrong') {
+        flash = { kind: 'bad', text: '❌ לא נכון. נסו שוב.' };
+      } else if (r.result === 'locked') {
+        flash = null;
+      } else {
+        flash = null; // stale: another phone of the team got there first
+      }
+      apply(r, true);
+      if (r.result === 'correct') window.scrollTo({ top: 0, behavior: 'smooth' });
+    } catch (e) { showNetErr(e.message); document.getElementById('sendAnswer').disabled = false; }
+    busy = false;
+  };
+}
+
+function dropToken() {
+  token = null;
+  history.replaceState(null, '', location.pathname);
+}
+
+// ---------------- photos: unlock now, upload in the background ----------------
+// Pending photos are kept in IndexedDB, so an upload survives the page being
+// reloaded or replaced (for example when the next QR scan opens in the same tab).
+const memQueue = new Map(); // fallback when IndexedDB is unavailable
+let uploadedCount = 0;
+const idb = new Promise((resolve) => {
+  try {
+    const req = indexedDB.open('race_uploads', 1);
+    req.onupgradeneeded = () => req.result.createObjectStore('q', { keyPath: 'id' });
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => resolve(null);
+  } catch (e) { resolve(null); }
+});
+async function qOp(mode, fn) {
+  const db = await idb;
+  if (!db) return null;
+  return new Promise((resolve) => {
+    try {
+      const tx = db.transaction('q', mode), r = fn(tx.objectStore('q'));
+      tx.oncomplete = () => resolve(r && r.result);
+      tx.onerror = () => resolve(null);
+    } catch (e) { resolve(null); }
+  });
+}
+async function qPut(item) { memQueue.set(item.id, item); await qOp('readwrite', (st) => st.put(item)); }
+async function qDel(id) { memQueue.delete(id); await qOp('readwrite', (st) => st.delete(id)); }
+async function qAll() {
+  const fromDb = (await qOp('readonly', (st) => st.getAll())) || [];
+  const all = new Map(fromDb.map((x) => [x.id, x]));
+  memQueue.forEach((v, k) => all.set(k, v));
+  return [...all.values()];
+}
+
+async function sendPhoto() {
+  if (!pickedPhoto || busy) return;
+  busy = true;
+  const btn = document.getElementById('sendPhoto');
+  btn.disabled = true; btn.innerHTML = '<span class="spinner"></span>';
+  try {
+    const blob = await compressImage(pickedPhoto);
+    const r = await rpc('submit_photo', { p_secret: auth.secret, p_token: token });
+    if (r.result === 'correct') {
+      await qPut({ id: r.photo_id, path: r.photo_path, blob, secret: auth.secret });
+      pumpUploads();
+      flash = { kind: 'good', text: '📸 התמונה התקבלה! הנה החידה הבאה:' };
+      dropToken();
+      r.scan = null;
+    }
+    pickedPhoto = null;
+    apply(r, true);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  } catch (e) { showNetErr(e.message); btn.disabled = false; btn.textContent = 'שליחת התמונה'; }
+  busy = false;
+}
+
+let pumping = false;
+async function pumpUploads() {
+  if (pumping) return;
+  pumping = true;
+  let tries = 0;
+  for (;;) {
+    const items = await qAll();
+    renderUploads(items.length);
+    if (!items.length) break;
+    const u = items[0];
+    try {
+      await uploadPhoto(u.path, u.blob);
+      await rpc('photo_uploaded', { p_secret: u.secret, p_photo_id: u.id }).catch(() => {});
+      await qDel(u.id);
+      uploadedCount++;
+      tries = 0;
+    } catch (e) {
+      tries++;
+      await new Promise((r) => setTimeout(r, Math.min(20000, 1000 * 2 ** Math.min(tries, 5))));
+    }
+  }
+  pumping = false;
+}
+function renderUploads(pending) {
+  const el = document.getElementById('uploads');
+  if (pending) el.innerHTML = `<span class="spinner" style="width:14px;height:14px;vertical-align:middle"></span> מעלה ${pending > 1 ? pending + ' תמונות' : 'תמונה'} ברקע…`;
+  else el.textContent = uploadedCount ? '✓ התמונות הועלו' : '';
+}
+window.addEventListener('online', pumpUploads);
+pumpUploads();
+
+// ---------------- ticking clocks ----------------
+setInterval(() => {
+  const t = document.getElementById('timer');
+  if (t && state && state.stage !== 'finished') t.textContent = fmtDuration(elapsedSec());
+  const ll = document.getElementById('lockLeft');
+  if (ll) {
+    const left = Math.ceil((lockUntil - Date.now()) / 1000);
+    if (left > 0) ll.textContent = fmtDuration(left);
+    else if (!document.getElementById('lockBox').classList.contains('hidden')) {
+      document.getElementById('lockBox').classList.add('hidden');
+      document.getElementById('answer').disabled = false;
+      document.getElementById('sendAnswer').disabled = false;
+    }
+  }
+}, 250);
+document.addEventListener('visibilitychange', () => { if (!document.hidden && auth) refresh(); });
+
+refresh();
+</script>
+</body>
+</html>
