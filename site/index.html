@@ -36,6 +36,9 @@ const { rpc, esc, textHtml, store, fmtDuration, compressImage, uploadPhoto } = G
 const app = document.getElementById('app');
 const params = new URLSearchParams(location.search);
 let token = params.get('s');
+// A photo waiting for the judge: remember its station code so this phone can
+// show the retake form after a rejection, even if the page was reopened.
+if (!token && store.get('race_photo_token')) token = store.get('race_photo_token');
 let auth = store.get('race_team');
 let state = null;          // last server response
 let clockOffset = 0;       // server time - local time (ms)
@@ -115,18 +118,34 @@ async function refresh(force) {
 
 function schedule() {
   clearTimeout(pollTimer);
-  const waiting = state && state.stage === 'waiting';
+  const waiting = state && (state.stage === 'waiting' || photoWaiting(state));
   pollTimer = setTimeout(refresh, waiting ? 3000 : 8000);
 }
 
+function photoWaiting(r) {
+  return r.photo_state === 'pending' || !!(r.scan && r.scan.photo_state === 'pending');
+}
+
 function apply(r, force) {
+  const prev = state;
+  // The judge approved our photo: move on to the next riddle.
+  if (prev && photoWaiting(prev) && r.done > prev.done) {
+    flash = { kind: 'good', text: '✅ השופט אישר את התמונה! הנה החידה הבאה:' };
+    if (navigator.vibrate) navigator.vibrate(200);
+  }
+  if (token && token === store.get('race_photo_token') && r.scan &&
+      !(r.scan.status === 'question' && r.scan.kind === 'photo')) {
+    store.del('race_photo_token');
+    dropToken();
+    r.scan = null;
+  }
   state = r;
   clockOffset = new Date(r.now).getTime() - Date.now();
   const sc = r.scan;
   if (sc && sc.status === 'question') {
     lockUntil = Date.now() + (sc.lock_left || 0) * 1000;
   }
-  const key = JSON.stringify([r.stage, r.done, r.total, r.riddle, sc && sc.status, sc && sc.question, sc && sc.wrong_count, sc && sc.lock_left > 0]);
+  const key = JSON.stringify([r.stage, r.done, r.total, r.riddle, r.photo_state, sc && sc.status, sc && sc.question, sc && sc.wrong_count, sc && sc.lock_left > 0, sc && sc.photo_state]);
   if (key !== lastKey || force) { lastKey = key; render(); }
 }
 
@@ -187,6 +206,12 @@ function stageCard(s) {
       return `<div class="card center"><div class="done-big">🕯️</div><h2>מוכנים?</h2>
         <p class="muted">המשחק עוד לא התחיל. ברגע הזינוק החידה הראשונה תופיע כאן לבד.</p><div class="spinner"></div></div>`;
     case 'riddle':
+      if (s.photo_state === 'pending') return waitingCard();
+      if (s.photo_state === 'rejected') {
+        return `<div class="card gold pop"><div class="label">משימת הצילום</div>
+          <div class="riddle">השופט לא אישר את התמונה 🙁</div>
+          <p class="muted">חזרו לתחנה וסרקו שוב את הקוד כדי לצלם מחדש.</p></div>`;
+      }
       return `<div class="card gold pop"><div class="label">החידה שמובילה לתחנה ${s.done + 1}</div>
         <div class="riddle">${textHtml(s.riddle)}</div>
         <div class="scanhint">📷 <span>מצאתם את הקוד? סרקו אותו עם המצלמה של הטלפון.</span></div></div>`;
@@ -205,16 +230,24 @@ function stageCard(s) {
   return '';
 }
 
+function waitingCard() {
+  return `<div class="card gold center pop"><div class="done-big">📸</div><h2>התמונה נשלחה!</h2>
+    <p class="big">מחכים לאישור השופט…</p>
+    <p class="muted">החידה הבאה תופיע כאן לבד ברגע שהתמונה תאושר. הישארו בדף.</p><div class="spinner"></div></div>`;
+}
+
 function questionCard(sc) {
   const locked = lockUntil > Date.now();
   if (sc.kind === 'photo') {
-    return `<div class="card gold pop"><div class="label">תחנה ${sc.number}: משימת צילום 📸</div>
+    if (sc.photo_state === 'pending') return waitingCard();
+    return `${sc.photo_state === 'rejected' ? '<div class="msg bad">השופט לא אישר את התמונה. צלמו שוב ושלחו.</div>' : ''}
+      <div class="card gold pop"><div class="label">תחנה ${sc.number}: משימת צילום 📸</div>
       <div class="riddle">${textHtml(sc.question)}</div>
       <div class="field" style="margin-top:16px">
         <label class="photo-pick" id="pick"><input type="file" id="photo" accept="image/*" capture="environment">
           <span id="pickText">📷 הקישו כאן כדי לצלם</span></label></div>
       <button class="full" id="sendPhoto" disabled>שליחת התמונה</button>
-      <p class="muted small">התמונה נשלחת לשופט, והחידה הבאה נפתחת מיד.</p></div>`;
+      <p class="muted small">התמונה נשלחת לשופט, והחידה הבאה נפתחת כשהוא מאשר אותה.</p></div>`;
   }
   return `<div class="card gold pop"><div class="label">תחנה ${sc.number}: שאלה</div>
     <div class="riddle">${textHtml(sc.question)}</div>
@@ -313,15 +346,14 @@ async function sendPhoto() {
   try {
     const blob = await compressImage(pickedPhoto);
     const r = await rpc('submit_photo', { p_secret: auth.secret, p_token: token });
-    if (r.result === 'correct') {
+    if (r.result === 'submitted') {
       await qPut({ id: r.photo_id, path: r.photo_path, blob, secret: auth.secret });
+      store.set('race_photo_token', token);
       pumpUploads();
-      flash = { kind: 'good', text: '📸 התמונה התקבלה! הנה החידה הבאה:' };
-      dropToken();
-      r.scan = null;
     }
     pickedPhoto = null;
     apply(r, true);
+    schedule();
     window.scrollTo({ top: 0, behavior: 'smooth' });
   } catch (e) { showNetErr(e.message); btn.disabled = false; btn.textContent = 'שליחת התמונה'; }
   busy = false;

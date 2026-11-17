@@ -34,6 +34,12 @@
   .photo img { width: 100%; aspect-ratio: 4/3; object-fit: cover; display: block; background: #000; cursor: zoom-in; }
   .photo .noimg { aspect-ratio: 4/3; display: flex; align-items: center; justify-content: center; color: var(--muted); }
   .photo .meta { padding: 10px; }
+  .photo-alert { position: fixed; top: 0; left: 0; right: 0; z-index: 15; background: var(--gold); color: #1a1400; font-weight: 700; padding: 12px 16px; display: flex; gap: 12px; align-items: center; justify-content: center; flex-wrap: wrap; box-shadow: 0 4px 20px rgba(0,0,0,.4); animation: pulse 1.2s ease-in-out infinite alternate; }
+  .photo-alert button { background: #0a1633; color: #fff; }
+  body.has-alert { padding-top: 56px; }
+  @keyframes pulse { from { filter: brightness(1); } to { filter: brightness(1.15); } }
+  .photo-actions button { flex: 1; padding: 12px; font-size: 16px; }
+  .tabs .badge { background: var(--bad); color: #fff; border-radius: 99px; padding: 0 8px; font-size: 13px; margin-inline-start: 6px; }
   .lightbox { position: fixed; inset: 0; background: rgba(0,0,0,.9); display: flex; align-items: center; justify-content: center; z-index: 10; cursor: zoom-out; }
   .lightbox img { max-width: 96vw; max-height: 96vh; }
   .qrs { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 14px; }
@@ -59,10 +65,12 @@
 <body>
 <div class="wrap">
   <header class="row noprint"><h1 class="grow" style="color:var(--gold)">🕎 ניהול מרוץ חנוכה</h1>
+    <button class="sm ghost" id="bell" title="צליל והתראה כשמגיעה תמונה">🔔 הפעלת התראות</button>
     <a class="btn ghost sm" href="tv.html" target="_blank" style="border:1px solid var(--line);color:var(--text);background:transparent">פתיחת מסך הטלוויזיה ↗</a></header>
   <div id="root"></div>
 </div>
 <div id="lightbox" class="lightbox hidden"><img alt=""></div>
+<div id="photoAlert" class="photo-alert hidden"></div>
 
 <script src="config.js"></script>
 <script src="common.js"></script>
@@ -72,7 +80,7 @@ const { rpc, esc, fmtDuration, photoUrl } = Game;
 const root = document.getElementById('root');
 let pw = sessionStorage.getItem('race_admin_pw');
 let tab = sessionStorage.getItem('race_admin_tab') || 'game';
-let ov = null, offset = 0, timer = null;
+let ov = null, offset = 0, timer = null, lastPhotoSig = '';
 const siteBase = new URL('./', location.href).href;
 const stationUrl = (tok) => `${siteBase}?s=${tok}`;
 
@@ -119,16 +127,82 @@ async function load(full) {
   offset = new Date(ov.now).getTime() - Date.now();
   if (full) renderShell();
   renderTab(full);
+  checkPhotoAlerts();
   clearTimeout(timer);
-  timer = setTimeout(() => load(false), 4000);
+  timer = setTimeout(() => load(false), 3000);
 }
 
 function renderShell() {
   const tabs = [['game', 'ניהול המשחק'], ['stations', 'תחנות וחידות'], ['photos', 'שיפוט תמונות'], ['qr', 'קודי QR להדפסה']];
-  root.innerHTML = `<div class="tabs noprint">${tabs.map(([k, l]) => `<button data-t="${k}" class="${tab === k ? 'on' : ''}">${l}</button>`).join('')}</div><div id="tab"></div>`;
+  root.innerHTML = `<div class="tabs noprint">${tabs.map(([k, l]) => `<button data-t="${k}" class="${tab === k ? 'on' : ''}">${l}${k === 'photos' ? '<span class="badge hidden" id="photoBadge"></span>' : ''}</button>`).join('')}</div><div id="tab"></div>`;
   root.querySelectorAll('.tabs button').forEach((b) => b.onclick = () => {
-    tab = b.dataset.t; sessionStorage.setItem('race_admin_tab', tab); renderShell(); renderTab(true);
+    tab = b.dataset.t; sessionStorage.setItem('race_admin_tab', tab); renderShell(); renderTab(true); checkPhotoAlerts();
   });
+}
+
+// ---------------- new-photo alerts ----------------
+let seenPhotos = null, audioCtx = null;
+const baseTitle = document.title;
+function unlockAudio() {
+  try {
+    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+  } catch (e) { /* no audio */ }
+}
+document.addEventListener('click', unlockAudio);
+function chime() {
+  if (!audioCtx) return;
+  const t0 = audioCtx.currentTime;
+  [880, 1175, 1568].forEach((f, i) => {
+    const o = audioCtx.createOscillator(), g = audioCtx.createGain();
+    o.type = 'sine'; o.frequency.value = f;
+    g.gain.setValueAtTime(0.0001, t0 + i * 0.16);
+    g.gain.exponentialRampToValueAtTime(0.4, t0 + i * 0.16 + 0.02);
+    g.gain.exponentialRampToValueAtTime(0.0001, t0 + i * 0.16 + 0.35);
+    o.connect(g).connect(audioCtx.destination);
+    o.start(t0 + i * 0.16); o.stop(t0 + i * 0.16 + 0.4);
+  });
+}
+function updateBell() {
+  const b = document.getElementById('bell');
+  const on = audioCtx && audioCtx.state === 'running';
+  b.textContent = on ? '🔔 התראות פעילות' : '🔔 הפעלת התראות';
+  b.classList.toggle('green', !!on); b.classList.toggle('ghost', !on);
+}
+document.getElementById('bell').onclick = async () => {
+  unlockAudio();
+  try { if ('Notification' in window && Notification.permission === 'default') await Notification.requestPermission(); } catch (e) { /* ignore */ }
+  setTimeout(() => { chime(); updateBell(); }, 50);
+};
+
+function checkPhotoAlerts() {
+  if (!ov) return;
+  const waiting = ov.photos.filter((p) => p.uploaded && p.verdict === 'pending');
+  const fresh = seenPhotos ? waiting.filter((p) => !seenPhotos.has(p.id)) : waiting;
+  seenPhotos = new Set(waiting.map((p) => p.id));
+  if (fresh.length) {
+    chime();
+    if (navigator.vibrate) navigator.vibrate([200, 100, 200]);
+    try {
+      if ('Notification' in window && Notification.permission === 'granted') {
+        const n = new Notification('📸 תמונה חדשה לאישור', { body: fresh.map((p) => p.team).join(', '), tag: 'race-photo', requireInteraction: true });
+        n.onclick = () => { window.focus(); goPhotos(); n.close(); };
+      }
+    } catch (e) { /* mobile browsers without page notifications */ }
+  }
+  const bar = document.getElementById('photoAlert');
+  const badge = document.getElementById('photoBadge');
+  if (badge) { badge.textContent = waiting.length; badge.classList.toggle('hidden', !waiting.length); }
+  document.title = waiting.length ? `(${waiting.length}) 📸 תמונה מחכה לאישור` : baseTitle;
+  if (waiting.length && tab !== 'photos') {
+    bar.innerHTML = `📸 ${waiting.length === 1 ? `הצוות "${esc(waiting[0].team)}" מחכה` : `${waiting.length} צוותים מחכים`} לאישור תמונה <button class="sm" id="goPhotos">לשיפוט עכשיו</button>`;
+    bar.classList.remove('hidden');
+    document.body.classList.add('has-alert');
+    document.getElementById('goPhotos').onclick = goPhotos;
+  } else { bar.classList.add('hidden'); document.body.classList.remove('has-alert'); }
+}
+function goPhotos() {
+  tab = 'photos'; sessionStorage.setItem('race_admin_tab', tab); renderShell(); renderTab(true); checkPhotoAlerts();
 }
 
 // Auto-refresh redraws only tabs that hold no half-typed input.
@@ -139,7 +213,10 @@ function renderTab(full) {
   const typing = a && el.contains(a) && /^(INPUT|SELECT|TEXTAREA)$/.test(a.tagName);
   if (tab === 'game') { if (full || !typing) renderGame(el); }
   else if (tab === 'stations') { if (full) renderStations(el); }
-  else if (tab === 'photos') { if (full || !typing) renderPhotos(el); }
+  else if (tab === 'photos') {
+    const sig = JSON.stringify(ov.photos);
+    if (full || sig !== lastPhotoSig) { lastPhotoSig = sig; renderPhotos(el); }
+  }
   else if (tab === 'qr') { if (full) renderQr(el); }
 }
 
@@ -178,7 +255,7 @@ function renderGame(el) {
       const startSel = s.game_state === 'waiting'
         ? `<select data-off="${t.id}"><option value="">אוטומטי (${autoOff})</option>${active.map((st, i) => `<option value="${i + 1}" ${t.start_offset === i + 1 ? 'selected' : ''}>${i + 1}. ${esc(st.name)}</option>`).join('')}</select>`
         : (t.route ? esc(stationName(t.route[0])) : '—');
-      const now = { waiting: '—', riddle: esc(stationName(t.current_station)), final: '<span class="pill gold">בדרך חזרה</span>', finished: '<span class="pill good">סיימו 🏁</span>', ended: 'לא סיימו' }[t.stage];
+      const now = { waiting: '—', riddle: esc(stationName(t.current_station)) + (t.photo_state === 'pending' ? ' <span class="pill gold">📸 מחכים לאישור</span>' : t.photo_state === 'rejected' ? ' <span class="pill bad">📸 צילום חוזר</span>' : ''), final: '<span class="pill gold">בדרך חזרה</span>', finished: '<span class="pill good">סיימו 🏁</span>', ended: 'לא סיימו' }[t.stage];
       const locked = t.locked_until ? `<span class="pill bad">נעול</span>` : '';
       return `<tr>
         <td><b>${esc(t.name)}</b></td><td>${esc(t.pin)}</td><td>${startSel}</td>
@@ -320,26 +397,32 @@ function stationForm(st, i) {
 
 // ---------------- photos tab ----------------
 function renderPhotos(el) {
-  const ph = ov.photos;
+  const order = { pending: 0, rejected: 1, ok: 2, penalty: 2 };
+  const ph = [...ov.photos].sort((a, b) => (order[a.verdict] - order[b.verdict]) || (a.verdict === 'pending'
+    ? new Date(a.created_at) - new Date(b.created_at) : new Date(b.created_at) - new Date(a.created_at)));
   const pending = ph.filter((p) => p.verdict === 'pending').length;
+  const status = (p) => ({ ok: '<span class="pill good">אושרה</span>', penalty: '<span class="pill good">אושרה</span>',
+    rejected: '<span class="pill bad">נדחתה, הצוות מצלם שוב</span>', pending: '<span class="pill gold">ממתינה לך</span>' }[p.verdict]);
   el.innerHTML = `<div class="card"><div class="label">שיפוט תמונות</div>
-    <p class="small" style="margin:0">כל תמונה פתחה לצוות את החידה הבאה מיד. כאן מאשרים, או נותנים עונש בדקות שמתווסף לזמן הסיום. ${pending} ממתינות לשיפוט.</p></div>
+    <p class="small" style="margin:0">הצוות ממתין בתחנה עד שתאשרו. <b>אישור</b> פותח לו את החידה הבאה מיד. <b>דחייה</b> מבקשת ממנו לצלם שוב. ${pending} ממתינות עכשיו.
+    השאירו את הדף פתוח ולחצו "🔔 הפעלת התראות" כדי לשמוע צליל כשמגיעה תמונה.</p></div>
     <div class="photos">${ph.map((p) => `
-      <div class="photo ${p.verdict}">
-        ${p.uploaded ? `<img src="${photoUrl(p.path)}" data-full="${photoUrl(p.path)}" loading="lazy" alt="">` : '<div class="noimg">⏳ התמונה עוד עולה…</div>'}
+      <div class="photo ${p.verdict === 'penalty' ? 'ok' : p.verdict}">
+        ${p.uploaded ? `<img src="${photoUrl(p.path)}" data-full="${photoUrl(p.path)}" alt="">` : '<div class="noimg">⏳ התמונה עוד עולה…</div>'}
         <div class="meta"><b>${esc(p.team)}</b> · <span class="muted small">${esc(p.station)} · ${new Date(p.created_at).toLocaleTimeString('he-IL')}</span>
-          <div class="row" style="margin-top:8px">
-            <button class="sm green" data-ok="${p.id}">✓ אישור</button>
-            <input type="number" min="1" value="${p.penalty_sec ? Math.round(p.penalty_sec / 60) : 2}" style="width:60px" id="pen-${p.id}">
-            <button class="sm red" data-pen="${p.id}">עונש (דק׳)</button>
-          </div>
-          <div class="small" style="margin-top:6px">${p.verdict === 'ok' ? '<span class="pill good">אושרה</span>' : p.verdict === 'penalty' ? `<span class="pill bad">עונש ${Math.round(p.penalty_sec / 60)} דק׳</span>` : '<span class="pill">ממתינה</span>'}</div>
+          <div class="small" style="margin:6px 0">${status(p)}</div>
+          ${p.verdict === 'pending' ? `<div class="row photo-actions">
+            <button class="green" data-ok="${p.id}" ${p.uploaded ? '' : 'disabled'}>✓ אישור</button>
+            <button class="red" data-no="${p.id}" ${p.uploaded ? '' : 'disabled'}>✗ דחייה</button></div>` : ''}
         </div></div>`).join('') || '<p class="muted">עוד אין תמונות.</p>'}</div>`;
-  el.querySelectorAll('[data-ok]').forEach((b) => b.onclick = async () => { await call('admin_judge', { p_photo_id: b.dataset.ok, p_verdict: 'ok', p_penalty_sec: 0 }); load(true); });
-  el.querySelectorAll('[data-pen]').forEach((b) => b.onclick = async () => {
-    const m = +document.getElementById('pen-' + b.dataset.pen).value || 0;
-    await call('admin_judge', { p_photo_id: b.dataset.pen, p_verdict: 'penalty', p_penalty_sec: m * 60 }); load(true);
-  });
+  const judge = async (id, verdict, btn) => {
+    btn.disabled = true;
+    await call('admin_judge', { p_photo_id: id, p_verdict: verdict, p_penalty_sec: 0 }).catch(() => {});
+    toast(verdict === 'ok' ? 'אושרה. הצוות קיבל את החידה הבאה.' : 'נדחתה. הצוות יצלם שוב.');
+    load(false);
+  };
+  el.querySelectorAll('[data-ok]').forEach((b) => b.onclick = () => judge(b.dataset.ok, 'ok', b));
+  el.querySelectorAll('[data-no]').forEach((b) => b.onclick = () => judge(b.dataset.no, 'rejected', b));
   el.querySelectorAll('img[data-full]').forEach((im) => im.onclick = () => {
     const lb = document.getElementById('lightbox'); lb.querySelector('img').src = im.dataset.full; lb.classList.remove('hidden');
   });

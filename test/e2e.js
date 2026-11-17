@@ -114,6 +114,28 @@ const assert = (c, m) => { if (!c) throw new Error('ASSERT: ' + m); console.log(
       if (i === 0 || !fs.existsSync(SHOTS + '/05-photo-task.png')) await p1.screenshot({ path: SHOTS + '/05-photo-task.png' });
       await p1.setInputFiles('#photo', __dirname + '/sample.jpg');
       await p1.click('#sendPhoto');
+      await p1.waitForSelector('text=מחכים לאישור השופט');
+      await p1.screenshot({ path: SHOTS + '/05b-photo-waiting.png' });
+      assert(true, 'after sending a photo the team waits for the judge (no next riddle yet)');
+      await admin.click('text=ניהול המשחק');
+      await admin.waitForSelector('#photoAlert:not(.hidden)', { timeout: 15000 });
+      await admin.screenshot({ path: SHOTS + '/25-admin-alert.png' });
+      assert((await admin.title()).includes('📸'), 'admin page shows a banner and a tab title alert when the photo arrives');
+      await admin.click('#goPhotos');
+      await admin.waitForSelector('[data-no]:enabled');
+      await admin.screenshot({ path: SHOTS + '/21-admin-judge.png' });
+      await admin.click('[data-no]');
+      await p1.waitForSelector('text=השופט לא אישר את התמונה', { timeout: 10000 });
+      await p1.screenshot({ path: SHOTS + '/05c-photo-rejected.png' });
+      assert(true, 'rejecting the photo asks the team to retake it');
+      await p1.setInputFiles('#photo', __dirname + '/sample.jpg');
+      await p1.click('#sendPhoto');
+      await p1.waitForSelector('text=מחכים לאישור השופט');
+      await admin.waitForSelector('[data-ok]:enabled', { timeout: 15000 });
+      await admin.click('[data-ok]');
+      await p1.waitForSelector('text=השופט אישר את התמונה', { timeout: 10000 });
+      assert(true, 'approving the photo shows the team its next riddle by itself');
+      await admin.click('text=ניהול המשחק');
     } else {
       await p1.waitForSelector('#answer');
       if (!lockTested) {
@@ -155,7 +177,7 @@ const assert = (c, m) => { if (!c) throw new Error('ASSERT: ' + m); console.log(
         const t = ov.teams.find((x) => x.name === n);
         for (let j = 0; j < (k % 7) + 1; j++) {
           const s2 = st[t.route[j]];
-          if (s2.kind === 'photo') await api('submit_photo', { p_secret: secrets[n], p_token: s2.token });
+          if (s2.kind === 'photo') { const ph = await api('submit_photo', { p_secret: secrets[n], p_token: s2.token }); await api('admin_judge', { p_pw: PW, p_photo_id: ph.photo_id, p_verdict: 'ok', p_penalty_sec: 0 }); }
           else await api('submit_answer', { p_secret: secrets[n], p_token: s2.token, p_answer: s2.answers[0] });
         }
       }
@@ -191,29 +213,17 @@ const assert = (c, m) => { if (!c) throw new Error('ASSERT: ' + m); console.log(
   const sv = ov.teams.find((x) => x.name === 'סביבונים');
   for (let j = 1; j < 8; j++) {
     const s2 = st[sv.route[j]];
-    if (s2.kind === 'photo') await api('submit_photo', { p_secret: secrets['סביבונים'], p_token: s2.token });
+    if (s2.kind === 'photo') { const ph = await api('submit_photo', { p_secret: secrets['סביבונים'], p_token: s2.token }); await api('admin_judge', { p_pw: PW, p_photo_id: ph.photo_id, p_verdict: 'ok', p_penalty_sec: 0 }); }
     else await api('submit_answer', { p_secret: secrets['סביבונים'], p_token: s2.token, p_answer: s2.answers[0] });
   }
   const fin2 = await api('scan', { p_secret: secrets['סביבונים'], p_token: ov.settings.finish_token });
   assert(fin2.stage === 'finished', 'second team finished too');
 
-  // judge photos (uploads were made flaky: first attempt fails, retry must succeed)
-  await p1.waitForTimeout(4000);
-  await admin.click('text=שיפוט תמונות');
-  await admin.waitForSelector('.photo');
+  // uploads were made flaky (first attempt fails), so this also checks the retry
   ov = await api('admin_overview', { p_pw: PW });
   const mine = ov.photos.filter((p) => p.team === 'המכבים המהירים');
-  assert(mine.length === 1 && mine.every((p) => p.uploaded), 'the photo uploaded after a failed first attempt (retry works)');
-  await admin.reload();
-  await admin.waitForSelector('.photo img');
-  await admin.waitForTimeout(500);
-  await admin.screenshot({ path: SHOTS + '/21-admin-judge.png' });
-  await admin.fill('#pen-' + mine[0].id, '3');
-  await admin.click(`[data-pen="${mine[0].id}"]`);
-  await admin.waitForTimeout(800);
-  ov = await api('admin_overview', { p_pw: PW });
-  const pt = ov.teams.find((t) => t.name === 'המכבים המהירים');
-  assert(pt.penalty_total === 180, 'photo penalty of 3 minutes adds 180s to the team');
+  assert(mine.length === 2 && mine.every((p) => p.uploaded) && mine.some((p) => p.verdict === 'rejected') && mine.some((p) => p.verdict === 'ok'),
+    'both photos (rejected + approved) uploaded despite a failed first upload attempt');
 
   await admin.click('text=ניהול המשחק');
   await admin.waitForTimeout(800);

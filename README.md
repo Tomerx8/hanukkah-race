@@ -14,7 +14,7 @@ A Hebrew mobile web game: teams race through QR stations in the office, each in 
 
 The site is already connected to the Supabase project (`site/config.js`) and publishes itself to GitHub Pages on every push to `main`.
 
-1. **Database** (once): in Supabase open **SQL Editor → New query**, paste all of `sql/setup.sql`, press **Run**. Running it again later is safe; it keeps teams and riddles.
+1. **Database** (once, and again after any change to `sql/setup.sql`): in Supabase open **SQL Editor → New query**, paste all of `sql/setup.sql`, press **Run**. Running it again later is safe; it keeps teams and riddles.
 2. **Pages** (once): in this repository open **Settings → Pages** and set **Source: GitHub Actions**.
 3. Open `https://tomerx8.github.io/hanukkah-race/admin.html`. **The first password you type becomes the admin password.** Do this right away.
 
@@ -31,7 +31,7 @@ Links: players `https://tomerx8.github.io/hanukkah-race/` · TV `…/tv.html` ·
 1. TV shows `tv.html` in **Lobby** mode, with a QR for joining. One person per team opens a team and picks a 4-digit code; teammates join with that code.
 2. Admin → **🚀 Start**. Every phone shows its team's first riddle; the TV switches to **Live**.
 3. When teams start heading back, press **Blackout**. At the end, press **Results**.
-4. Judge photos in the **Photos** tab; a penalty in minutes is added to that team's time. You can also add a manual penalty per team.
+4. Keep the admin page open and press **🔔 Enable alerts** once. When a team sends its photo you get a chime, a yellow banner and a red badge on the **Photos** tab (plus a desktop notification where the browser allows it). **Approve** shows the team its next riddle at once; **Reject** asks the team to retake. You can also add a manual penalty per team.
 5. If a QR goes missing, **Skip** moves that team past its current station. **Release lock** clears a lockout.
 
 ## Rules built in
@@ -39,7 +39,7 @@ Links: players `https://tomerx8.github.io/hanukkah-race/` · TV `…/tv.html` ·
 - Station links are random, so a team cannot skip ahead or guess the next URL. Scanning another team's station shows "not your station".
 - First wrong answer is free; each further miss locks the team for 20s, 40s, 80s… up to 5 minutes (editable).
 - Answers ignore spaces, niqqud, punctuation and final letters. An answer that is only a number also matches a sentence containing it.
-- Photo tasks unlock the next riddle immediately; the photo uploads in the background and keeps retrying, even across page reloads.
+- Photo tasks wait for the admin: the team sees "waiting for the judge" until you approve, and gets a retake form if you reject. The photo upload keeps retrying, even across page reloads.
 - Starting stations: teams are spread round-robin over the stations in registration order (11 teams on 8 stations → 1-2 per station). You can set a team's start station by hand before the start.
 
 ## Run locally

@@ -104,10 +104,15 @@ create table if not exists game.photos (
   station_id  int references game.stations on delete cascade,
   path        text not null,
   uploaded    boolean not null default false,
-  verdict     text not null default 'pending' check (verdict in ('pending', 'ok', 'penalty')),
+  verdict     text not null default 'pending' check (verdict in ('pending', 'ok', 'penalty', 'rejected')),
   penalty_sec int not null default 0,
   created_at  timestamptz not null default now()
 );
+
+-- Upgrade from the first version: photos can now be rejected.
+alter table game.photos drop constraint if exists photos_verdict_check;
+alter table game.photos add constraint photos_verdict_check
+  check (verdict in ('pending', 'ok', 'penalty', 'rejected'));
 
 revoke all on all tables in schema game from public;
 
@@ -175,6 +180,14 @@ language sql stable as $$
        + coalesce((select sum(penalty_sec) from game.photos where team_id = p_team), 0)::int
 $$;
 
+-- State of the latest photo a team sent for a station: 'pending', 'rejected' or null.
+create or replace function game.photo_state(p_team int, p_station int) returns text
+language sql stable as $$
+  select case verdict when 'pending' then 'pending' when 'rejected' then 'rejected' end
+  from game.photos where team_id = p_team and station_id = p_station
+  order by created_at desc limit 1
+$$;
+
 create or replace function game.stage(t game.teams) returns text
 language plpgsql stable as $$
 declare s game.settings; n int;
@@ -212,6 +225,7 @@ begin
     'done', least(t.step, n),
     'stage', st,
     'riddle', riddle,
+    'photo_state', case when st = 'riddle' then game.photo_state(t.id, t.route[t.step + 1]) end,
     'finished_at', t.finished_at,
     'penalty_sec', game.penalty_total(t.id)
   );
@@ -249,7 +263,8 @@ begin
       'question', stn.question,
       'number', t.step + 1,
       'wrong_count', coalesce(p.wrong_count, 0),
-      'lock_left', lock_left);
+      'lock_left', lock_left,
+      'photo_state', game.photo_state(t.id, stn.id));
   end if;
 
   if stn.id = any (t.route[1:t.step]) then
@@ -344,25 +359,25 @@ begin
   return game.team_json(t.id) || jsonb_build_object('result', 'wrong', 'scan', game.scan_json(t, p_token));
 end $$;
 
--- Photo tasks unlock at once; the photo uploads in the background and is judged later.
+-- A photo task waits for the admin: the photo is stored as 'pending', and the
+-- team moves on only when the admin approves it (see admin_judge).
 create or replace function public.submit_photo(p_secret text, p_token text)
 returns jsonb language plpgsql security definer set search_path = game, public as $$
 declare t game.teams; sc jsonb; stn game.stations; ph game.photos;
 begin
   t := game.team_for(p_secret, true);
   sc := game.scan_json(t, p_token);
-  if sc->>'status' is distinct from 'question' or sc->>'kind' <> 'photo' then
+  if sc->>'status' is distinct from 'question' or sc->>'kind' <> 'photo'
+     or sc->>'photo_state' = 'pending' then
     return game.team_json(t.id) || jsonb_build_object('result', 'stale', 'scan', sc);
   end if;
   select * into stn from game.stations where token = p_token;
   insert into game.photos (team_id, station_id, path)
   values (t.id, stn.id, 'team' || t.id || '/' || stn.id || '-' || game.new_token() || '.jpg')
   returning * into ph;
-  insert into game.progress (team_id, station_id, solved_at) values (t.id, stn.id, now())
-  on conflict (team_id, station_id) do update set solved_at = now();
-  update game.teams set step = step + 1 where id = t.id;
   return game.team_json(t.id)
-    || jsonb_build_object('result', 'correct', 'photo_id', ph.id, 'photo_path', ph.path);
+    || jsonb_build_object('result', 'submitted', 'photo_id', ph.id, 'photo_path', ph.path,
+                          'scan', game.scan_json(t, p_token));
 end $$;
 
 create or replace function public.photo_uploaded(p_secret text, p_photo_id uuid)
@@ -448,6 +463,7 @@ begin
         'id', t.id, 'name', t.name, 'pin', t.pin, 'start_offset', t.start_offset,
         'route', t.route, 'step', t.step, 'total', coalesce(array_length(t.route, 1), 0),
         'stage', game.stage(t),
+        'photo_state', case when game.stage(t) = 'riddle' then game.photo_state(t.id, t.route[t.step + 1]) end,
         'current_station', t.route[t.step + 1],
         'finished_at', t.finished_at,
         'elapsed_sec', case when t.finished_at is not null then extract(epoch from (t.finished_at - s.started_at))::int end,
@@ -597,13 +613,25 @@ begin
   return jsonb_build_object('ok', true);
 end $$;
 
+-- Approving a photo moves the team on to its next riddle; rejecting it asks for a retake.
 create or replace function public.admin_judge(p_pw text, p_photo_id uuid, p_verdict text, p_penalty_sec int)
 returns jsonb language plpgsql security definer set search_path = game, public as $$
+declare ph game.photos; t game.teams;
 begin
   perform game.assert_admin(p_pw);
+  select * into ph from game.photos where id = p_photo_id for update;
+  if ph.id is null then raise exception 'NO_SUCH_PHOTO'; end if;
   update game.photos set verdict = p_verdict,
          penalty_sec = case when p_verdict = 'penalty' then coalesce(p_penalty_sec, 0) else 0 end
    where id = p_photo_id;
+  if p_verdict in ('ok', 'penalty') then
+    select * into t from game.teams where id = ph.team_id for update;
+    if game.stage(t) = 'riddle' and t.route[t.step + 1] = ph.station_id then
+      insert into game.progress (team_id, station_id, solved_at) values (t.id, ph.station_id, now())
+      on conflict (team_id, station_id) do update set solved_at = now();
+      update game.teams set step = step + 1 where id = t.id;
+    end if;
+  end if;
   return jsonb_build_object('ok', true);
 end $$;
 
